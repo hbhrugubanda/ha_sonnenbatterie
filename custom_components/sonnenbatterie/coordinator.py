@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL, CONF_USERNAME, CONF_PASSWORD, CONF_IP_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from sonnenbatterie import AsyncSonnenBatterie
 
 from custom_components.sonnenbatterie import LOGGER, DOMAIN, ATTR_SONNEN_DEBUG
@@ -46,6 +46,10 @@ class SonnenbatterieCoordinator(DataUpdateCoordinator):
     TIMEOUT_CONNECT = 6
     TIMEOUT_READ = 30
     TIMEOUT_TOTAL = 40
+
+    # How long a failing battery may keep its last values before the entities
+    # are marked unavailable (seconds).
+    STALE_AFTER = 180
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry, serial: str) -> None:
         # Never log secrets (password / Auth-Token) in clear text.
@@ -141,6 +145,10 @@ class SonnenbatterieCoordinator(DataUpdateCoordinator):
             0, int(remaining_capacity - reserved_capacity)
         )
 
+    def _has_data(self) -> bool:
+        """True once the keys populate_battery_info() needs have been fetched."""
+        return "status" in self.latestData and "battery_system" in self.latestData
+
     def _relax_timeouts(self, *clients):
         """Apply relaxed timeouts to the given async client(s). The v1 client
         RE-CREATES its v2 sub-client (sbconn.sb2) on every login, so this must run
@@ -211,12 +219,16 @@ class SonnenbatterieCoordinator(DataUpdateCoordinator):
             LOGGER.debug(traceback.format_exc())
             if self._last_error is not None:
                 LOGGER.info(traceback.format_exc() + " ... might be maintenance window")
-                elapsed = time() - self._last_error
-                if elapsed > 180:
-                    LOGGER.error(
-                        f"Unable to connecto to Sonnenbatteries at {self._config_entry.data[CONF_IP_ADDRESS]} for {elapsed} seconds. Please check! [{e}]")
             else:
                 self._last_error = time()
+            elapsed = time() - self._last_error
+            # Short outages keep the last values (the battery is often slow to
+            # answer). Past STALE_AFTER, or with nothing fetched yet, raise so
+            # entities go unavailable instead of showing old values as current.
+            if not self._has_data() or elapsed > self.STALE_AFTER:
+                raise UpdateFailed(
+                    f"Unable to connect to Sonnenbatterie at {self._config_entry.data[CONF_IP_ADDRESS]} "
+                    f"for {elapsed:.0f} seconds [{e}]") from e
 
         # Fixup for older models
         if isinstance(self.latestData.get("powermeter"), dict):
