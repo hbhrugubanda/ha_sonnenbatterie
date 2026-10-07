@@ -188,13 +188,14 @@ class SonnenbatterieCoordinator(DataUpdateCoordinator):
             await self._update_locked()
 
     async def _update_locked(self):
-        await self._ensure_login()
-
         LOGGER.debug(f"COORDINATOR - async_update_data: {self._config_entry.data}")
         slow_due = (not self.latestData
                     or self._cycle_count % self.SLOW_POLL_EVERY == 0)
         self._cycle_count += 1
         try:
+            # Inside the try so a failed login follows the same STALE_AFTER rule
+            # as a failed read (after any failure the next poll logs in again).
+            await self._ensure_login()
             self.latestData["battery"] = await self.sbconn.get_battery()
             self.latestData["inverter"] = await self.sbconn.get_inverter()
             self.latestData["powermeter"] = await self.sbconn.get_powermeter()

@@ -96,3 +96,27 @@ async def test_login_failure_is_reported(setup):
     client.login.side_effect = OSError("host unreachable")
     await coordinator.async_refresh()
     assert not coordinator.last_update_success
+
+
+async def test_failed_login_after_failed_read_keeps_values(setup):
+    """A full outage: the read times out, then every re-login times out too.
+    Both follow the same rule as a failed read."""
+    coordinator, client, clock = setup
+    await coordinator.async_refresh()
+
+    client.get_battery.side_effect = TimeoutError("socket read")
+    client.login.side_effect = TimeoutError("connect")
+    await coordinator.async_refresh()   # read fails, session reset
+    clock.now += 30
+    await coordinator.async_refresh()   # re-login fails
+    assert coordinator.last_update_success
+    assert client.login.await_count >= 2
+
+    clock.now += 160
+    await coordinator.async_refresh()
+    assert not coordinator.last_update_success
+
+    client.get_battery.side_effect = None
+    client.login.side_effect = None
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
